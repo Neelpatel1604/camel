@@ -41,20 +41,25 @@ def run_memanto_toolkit_example() -> None:
     )
 
     toolkit = MemantoToolkit(agent_id="my-camel-agent")
-    for tool in toolkit.get_tools():
-        agent.add_tool(tool)
+    try:
+        for tool in toolkit.get_tools():
+            agent.add_tool(tool)
 
-    print("\n--- Remember a preference ---")
-    remember_msg = (
-        "Please remember that the user prefers concise Python examples."
-    )
-    response = agent.step(remember_msg)
-    print(f"[Agent] {response.msgs[0].content}")
+        print("\n--- Remember a preference ---")
+        remember_msg = (
+            "Please remember that the user prefers concise Python examples."
+        )
+        response = agent.step(remember_msg)
+        print(f"[Agent] {response.msgs[0].content}")
 
-    print("\n--- Recall the preference ---")
-    recall_msg = "What do you remember about the user's coding preferences?"
-    response = agent.step(recall_msg)
-    print(f"[Agent] {response.msgs[0].content}")
+        print("\n--- Recall the preference ---")
+        recall_msg = (
+            "What do you remember about the user's coding preferences?"
+        )
+        response = agent.step(recall_msg)
+        print(f"[Agent] {response.msgs[0].content}")
+    finally:
+        toolkit.close()
 
 
 if __name__ == "__main__":

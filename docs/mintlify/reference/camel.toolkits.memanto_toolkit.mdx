@@ -9,11 +9,16 @@ class MemantoToolkit(BaseToolkit):
 ```
 
 A toolkit for explicit Memanto memory operations via function calling.
+Requires a running [Memanto server](https://docs.memanto.ai) and an existing
+agent. It activates a session on initialization and retries once with a new
+session token after a `401` response.
 
 **Parameters:**
 
-- **agent_id** (str, optional): Memanto agent identifier.
-- **base_url** (str, optional): Memanto server URL.
+- **agent_id** (str, optional): Memanto agent identifier. Falls back to
+  `MEMANTO_AGENT_ID`.
+- **base_url** (str, optional): Memanto server URL. Falls back to
+  `MEMANTO_BASE_URL`, then `http://localhost:8000`.
 - **timeout** (Optional[float], optional): Toolkit operation timeout.
 
 <a id="camel.toolkits.memanto_toolkit.MemantoToolkit.memanto_remember"></a>
@@ -66,3 +71,11 @@ def get_tools(self) -> List[FunctionTool]:
 ```
 
 Returns the Memanto function tools for a ChatAgent.
+
+### close
+
+```python
+def close(self) -> None:
+```
+
+Closes the HTTP client. Call after the agent has finished using the toolkit.

@@ -15,16 +15,196 @@
 import json
 import logging
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from camel.storages.key_value_storages.memanto import (
-    MemantoMemoryType,
-    MemantoRESTClient,
-)
+import httpx
+
 from camel.toolkits.base import BaseToolkit
 from camel.toolkits.function_tool import FunctionTool
 
 logger = logging.getLogger(__name__)
+
+
+MemantoMemoryType = Literal[
+    "fact",
+    "preference",
+    "goal",
+    "decision",
+    "artifact",
+    "learning",
+    "event",
+    "instruction",
+    "relationship",
+    "context",
+    "observation",
+    "commitment",
+    "error",
+]
+
+
+class _MemantoRESTClient:
+    r"""REST client for the Memanto memory API.
+
+    Args:
+        agent_id (str): Memanto agent identifier.
+        base_url (str, optional): Memanto server URL. Defaults to
+            :obj:`MEMANTO_BASE_URL` or ``http://localhost:8000``.
+        timeout (float, optional): HTTP request timeout in seconds.
+            (default: :obj:`30.0`)
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        base_url: Optional[str] = None,
+        timeout: float = 30.0,
+    ) -> None:
+        self.agent_id = agent_id
+        self.base_url = (
+            base_url
+            or os.getenv("MEMANTO_BASE_URL")
+            or "http://localhost:8000"
+        ).rstrip("/")
+        self._client = httpx.Client(timeout=timeout)
+        self._session_token: Optional[str] = None
+        try:
+            self.activate_session()
+        except Exception:
+            self._client.close()
+            raise
+
+    def activate_session(self) -> str:
+        r"""Activate an agent session and store the session token.
+
+        Returns:
+            str: The session token for subsequent memory operations.
+        """
+        response = self._client.post(
+            f"{self.base_url}/api/v2/agents/{self.agent_id}/activate"
+        )
+        response.raise_for_status()
+        data = response.json()
+        self._session_token = data["session_token"]
+        return self._session_token
+
+    def _headers(self) -> Dict[str, str]:
+        if not self._session_token:
+            self.activate_session()
+        return {
+            "X-Session-Token": self._session_token or "",
+            "Content-Type": "application/json",
+        }
+
+    def _session_request(
+        self,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        r"""Send a request and re-activate the session once on 401."""
+        response = self._client.request(
+            method,
+            url,
+            headers=self._headers(),
+            **kwargs,
+        )
+        if response.status_code == 401:
+            self.activate_session()
+            response = self._client.request(
+                method,
+                url,
+                headers=self._headers(),
+                **kwargs,
+            )
+        response.raise_for_status()
+        return response
+
+    def remember(
+        self,
+        content: str,
+        memory_type: MemantoMemoryType = "context",
+        title: Optional[str] = None,
+        confidence: float = 1.0,
+        tags: Optional[List[str]] = None,
+    ) -> str:
+        r"""Store a memory for the active agent.
+
+        Args:
+            content (str): Memory content.
+            memory_type (MemantoMemoryType, optional): Semantic memory type.
+                (default: :obj:`"context"`)
+            title (Optional[str], optional): Short title for the memory.
+            confidence (float, optional): Confidence score.
+                (default: :obj:`1.0`)
+            tags (Optional[List[str]], optional): Optional tags.
+
+        Returns:
+            str: The stored memory ID.
+        """
+        payload: Dict[str, Any] = {
+            "content": content,
+            "type": memory_type,
+            "title": title or f"{memory_type.title()}: {content[:50]}",
+            "confidence": confidence,
+        }
+        if tags:
+            payload["tags"] = tags
+
+        response = self._session_request(
+            "POST",
+            f"{self.base_url}/api/v2/agents/{self.agent_id}/remember",
+            json=payload,
+        )
+        return response.json()["memory_id"]
+
+    def recall(
+        self,
+        query: str,
+        limit: int = 10,
+        memory_type: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        r"""Retrieve memories by semantic similarity.
+
+        Args:
+            query (str): Natural-language search query.
+            limit (int, optional): Maximum memories to return.
+                (default: :obj:`10`)
+            memory_type (Optional[List[str]], optional): Optional
+                type filter.
+
+        Returns:
+            List[Dict[str, Any]]: Matching memory records.
+        """
+        payload: Dict[str, Any] = {"query": query, "limit": limit}
+        if memory_type:
+            payload["type"] = memory_type
+
+        response = self._session_request(
+            "POST",
+            f"{self.base_url}/api/v2/agents/{self.agent_id}/recall",
+            json=payload,
+        )
+        return response.json().get("memories", [])
+
+    def answer(self, question: str) -> str:
+        r"""Generate an answer grounded in stored memories.
+
+        Args:
+            question (str): Question to answer.
+
+        Returns:
+            str: Generated answer text.
+        """
+        response = self._session_request(
+            "POST",
+            f"{self.base_url}/api/v2/agents/{self.agent_id}/answer",
+            json={"question": question},
+        )
+        return response.json().get("answer", "")
+
+    def close(self) -> None:
+        r"""Close the underlying HTTP client."""
+        self._client.close()
 
 
 class MemantoToolkit(BaseToolkit):
@@ -54,7 +234,7 @@ class MemantoToolkit(BaseToolkit):
             )
 
         self.agent_id = resolved_agent_id
-        self._client = MemantoRESTClient(
+        self._client = _MemantoRESTClient(
             agent_id=self.agent_id,
             base_url=base_url,
         )
@@ -158,3 +338,7 @@ class MemantoToolkit(BaseToolkit):
             FunctionTool(self.memanto_recall),
             FunctionTool(self.memanto_answer),
         ]
+
+    def close(self) -> None:
+        r"""Close the HTTP client when the toolkit is no longer needed."""
+        self._client.close()

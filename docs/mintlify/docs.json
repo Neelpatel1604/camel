@@ -466,7 +466,6 @@
               "reference/camel.storages.key_value_storages.in_memory",
               "reference/camel.storages.key_value_storages.json",
               "reference/camel.storages.key_value_storages.mem0_cloud",
-              "reference/camel.storages.key_value_storages.memanto",
               "reference/camel.storages.key_value_storages.redis",
               "reference/camel.storages.object_storages.amazon_s3",
               "reference/camel.storages.object_storages.azure_blob",

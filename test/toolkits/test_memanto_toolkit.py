@@ -13,44 +13,39 @@
 # ========= Copyright 2023-2026 @ CAMEL-AI.org. All Rights Reserved. =========
 
 import json
-import os
-import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
 
 from camel.toolkits.memanto_toolkit import MemantoToolkit
 
-AGENT_ID = "my-camel-agent"
-BASE_URL = os.getenv("MEMANTO_BASE_URL", "http://127.0.0.1:8000")
+
+@pytest.fixture
+def memanto_http():
+    requests = []
+    responses = []
+
+    def handle(request):
+        requests.append(request)
+        if request.url.path.endswith("/activate"):
+            return httpx.Response(200, json={"session_token": "test-token"})
+        return responses.pop(0)
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        with patch("httpx.Client", return_value=client):
+            toolkit = MemantoToolkit(
+                agent_id="test-agent", base_url="https://memanto.example/"
+            )
+        try:
+            yield toolkit, requests, responses
+        finally:
+            toolkit.close()
 
 
-def _memanto_server_available() -> bool:
-    try:
-        response = httpx.get(f"{BASE_URL.rstrip('/')}/health", timeout=3.0)
-        return response.status_code == 200
-    except Exception:
-        return False
-
-
-@pytest.fixture(scope="function")
-def memanto_toolkit_fixture():
-    mock_client = MagicMock()
-    patcher = patch(
-        "camel.toolkits.memanto_toolkit.MemantoRESTClient",
-        return_value=mock_client,
-    )
-    patcher.start()
-    toolkit = MemantoToolkit(agent_id="test_agent")
-    toolkit._client = mock_client
-    yield toolkit, mock_client
-    patcher.stop()
-
-
-def test_memanto_remember(memanto_toolkit_fixture):
-    toolkit, mock_client = memanto_toolkit_fixture
-    mock_client.remember.return_value = "mem-123"
+def test_memanto_remember(memanto_http):
+    toolkit, requests, responses = memanto_http
+    responses.append(httpx.Response(200, json={"memory_id": "mem-123"}))
 
     result = toolkit.memanto_remember(
         content="User prefers Python",
@@ -60,109 +55,117 @@ def test_memanto_remember(memanto_toolkit_fixture):
     )
 
     assert "mem-123" in result
-    mock_client.remember.assert_called_once_with(
-        content="User prefers Python",
-        memory_type="preference",
-        confidence=0.9,
-        tags=["language", "python"],
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/api/v2/agents/test-agent/activate"
+    request = requests[-1]
+    assert request.method == "POST"
+    assert str(request.url) == (
+        "https://memanto.example/api/v2/agents/test-agent/remember"
     )
+    assert request.headers["X-Session-Token"] == "test-token"
+    payload = json.loads(request.content)
+    assert payload["content"] == "User prefers Python"
+    assert payload["type"] == "preference"
+    assert payload["confidence"] == 0.9
+    assert payload["tags"] == ["language", "python"]
 
 
-def test_memanto_recall(memanto_toolkit_fixture):
-    toolkit, mock_client = memanto_toolkit_fixture
-    mock_client.recall.return_value = [
-        {"content": "User prefers Python", "type": "preference"}
-    ]
+def test_memanto_recall(memanto_http):
+    toolkit, requests, responses = memanto_http
+    memories = [{"content": "User prefers Python", "type": "preference"}]
+    responses.append(httpx.Response(200, json={"memories": memories}))
 
     result = toolkit.memanto_recall(
         query="What language does the user prefer?",
         limit=3,
-        memory_type="preference,fact",
-    )
-    parsed = json.loads(result)
-
-    assert len(parsed) == 1
-    mock_client.recall.assert_called_once_with(
-        query="What language does the user prefer?",
-        limit=3,
-        memory_type=["preference", "fact"],
+        memory_type="preference, fact, ",
     )
 
-
-def test_memanto_answer(memanto_toolkit_fixture):
-    toolkit, mock_client = memanto_toolkit_fixture
-    mock_client.answer.return_value = "The user prefers Python."
-
-    result = toolkit.memanto_answer("What language does the user prefer?")
-
-    assert result == "The user prefers Python."
-    mock_client.answer.assert_called_once_with(
-        question="What language does the user prefer?"
-    )
+    assert json.loads(result) == memories
+    assert requests[-1].url.path == "/api/v2/agents/test-agent/recall"
+    assert json.loads(requests[-1].content) == {
+        "query": "What language does the user prefer?",
+        "limit": 3,
+        "type": ["preference", "fact"],
+    }
 
 
-def test_get_tools(memanto_toolkit_fixture):
-    toolkit, _ = memanto_toolkit_fixture
-    tools = toolkit.get_tools()
-    tool_names = {tool.get_function_name() for tool in tools}
+def test_memanto_answer(memanto_http):
+    toolkit, requests, responses = memanto_http
+    answer = "The user prefers Python."
+    responses.append(httpx.Response(200, json={"answer": answer}))
 
-    assert tool_names == {
+    assert toolkit.memanto_answer("Preferred language?") == answer
+    assert requests[-1].url.path == "/api/v2/agents/test-agent/answer"
+    assert json.loads(requests[-1].content) == {
+        "question": "Preferred language?"
+    }
+
+
+def test_get_tools(memanto_http):
+    toolkit, _, _ = memanto_http
+    schemas = [tool.get_openai_tool_schema() for tool in toolkit.get_tools()]
+    assert {schema["function"]["name"] for schema in schemas} == {
         "memanto_remember",
         "memanto_recall",
         "memanto_answer",
     }
+    remember = schemas[0]["function"]["parameters"]["properties"]
+    assert "preference" in remember["memory_type"]["enum"]
 
 
-def test_initialization_requires_agent_id():
-    with patch.dict("os.environ", {}, clear=True):
-        with pytest.raises(ValueError):
+def test_initialization_requires_agent_id(monkeypatch):
+    monkeypatch.delenv("MEMANTO_AGENT_ID", raising=False)
+    with patch("httpx.Client") as client:
+        with pytest.raises(ValueError, match="agent_id must be provided"):
             MemantoToolkit()
+        client.assert_not_called()
 
 
-@pytest.mark.skipif(
-    not _memanto_server_available(),
-    reason="Memanto server is not running at MEMANTO_BASE_URL",
-)
-class TestMemantoToolkitIntegration(unittest.TestCase):
-    r"""Live integration tests for MemantoToolkit.
+def test_expired_session_retries_with_new_token(memanto_http):
+    toolkit, requests, responses = memanto_http
+    toolkit._client._session_token = "expired-token"
+    responses.extend(
+        [
+            httpx.Response(401),
+            httpx.Response(200, json={"memory_id": "mem-123"}),
+        ]
+    )
 
-    Prerequisites:
-        memanto serve
-        memanto agent create my-camel-agent
-    """
+    assert "mem-123" in toolkit.memanto_remember("A fact")
+    assert [request.url.path.rsplit("/", 1)[-1] for request in requests] == [
+        "activate",
+        "remember",
+        "activate",
+        "remember",
+    ]
+    assert requests[1].headers["X-Session-Token"] == "expired-token"
+    assert requests[3].headers["X-Session-Token"] == "test-token"
+    assert requests[1].content == requests[3].content
 
-    def setUp(self):
-        self.toolkit = MemantoToolkit(
-            agent_id=AGENT_ID,
-            base_url=BASE_URL,
-        )
 
-    def test_remember_and_recall(self):
-        remember_result = self.toolkit.memanto_remember(
-            content="Integration test user prefers Python over JavaScript.",
-            memory_type="preference",
-            tags="integration, language",
-            confidence=0.95,
-        )
-        self.assertIn("Memory stored with ID", remember_result)
+@pytest.mark.parametrize("status", [401, 500])
+def test_failed_request_returns_error_without_unbounded_retry(
+    memanto_http, status
+):
+    toolkit, requests, responses = memanto_http
+    responses.extend([httpx.Response(status), httpx.Response(status)])
 
-        recall_result = self.toolkit.memanto_recall(
-            query="What programming language does the user prefer?",
-            limit=5,
-            memory_type="preference",
-        )
-        self.assertNotIn("[ERROR]", recall_result)
-        self.assertIn("Python", recall_result)
+    assert toolkit.memanto_answer("Question?").startswith("[ERROR]")
+    assert len(requests) == (4 if status == 401 else 2)
 
-    def test_answer(self):
-        self.toolkit.memanto_remember(
-            content="The user's name is Alex and they work in finance.",
-            memory_type="fact",
-            confidence=1.0,
-        )
 
-        answer = self.toolkit.memanto_answer(
-            "What industry does the user work in?"
-        )
-        self.assertNotIn("[ERROR]", answer)
-        self.assertTrue(len(answer.strip()) > 0)
+def test_failed_activation_closes_client():
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(404))
+    ) as client:
+        with patch("httpx.Client", return_value=client):
+            with pytest.raises(httpx.HTTPStatusError):
+                MemantoToolkit(agent_id="missing-agent")
+        assert client.is_closed
+
+
+def test_close(memanto_http):
+    toolkit, _, _ = memanto_http
+    toolkit.close()
+    assert toolkit._client._client.is_closed
