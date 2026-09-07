@@ -383,6 +383,7 @@
             "group": "Memory",
             "pages": [
               "reference/camel.memories.agent_memories",
+              "reference/camel.memories.memanto",
               "reference/camel.memories.base",
               "reference/camel.memories.records",
               "reference/camel.memories.blocks.chat_history_block",
@@ -542,7 +543,6 @@
               "reference/camel.toolkits.math_toolkit",
               "reference/camel.toolkits.mcp_toolkit",
               "reference/camel.toolkits.memory_toolkit",
-              "reference/camel.toolkits.memanto_toolkit",
               "reference/camel.toolkits.meshy_toolkit",
               "reference/camel.toolkits.message_agent_toolkit",
               "reference/camel.toolkits.message_integration",

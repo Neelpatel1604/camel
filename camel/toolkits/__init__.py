@@ -59,7 +59,6 @@ from .zapier_toolkit import ZapierToolkit
 from .sympy_toolkit import SymPyToolkit
 from .mineru_toolkit import MinerUToolkit
 from .memory_toolkit import MemoryToolkit
-from .memanto_toolkit import MemantoToolkit
 from .audio_analysis_toolkit import AudioAnalysisToolkit
 from .excel_toolkit import ExcelToolkit
 from .video_analysis_toolkit import VideoAnalysisToolkit
@@ -155,7 +154,6 @@ __all__ = [
     'SymPyToolkit',
     'MinerUToolkit',
     'MemoryToolkit',
-    'MemantoToolkit',
     'MCPToolkit',
     'AudioAnalysisToolkit',
     'ExcelToolkit',
